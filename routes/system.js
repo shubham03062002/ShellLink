@@ -1,7 +1,9 @@
 const express = require("express");
 const router = express.Router();
 const executeSSHCommand = require("../sshClient");
-const runShellCommand = require("../sshShell");
+const {runShellCommand} = require("../sshShell");
+// const { runShellCommand } = require("./sshShell"); // updated import (named export now)
+
 /**
  * Extracts SSH config dynamically from request.
  * Priority: Authorization header (base64 JSON) > request body > query params
@@ -101,31 +103,44 @@ router.get("/system", async (req, res) => {
   });
 
 // ─── POST /execute ───────────────────────────────────────────────────────────
+
 router.post("/execute", async (req, res) => {
-    try {
-  
-      const sshConfig = getSSHConfig(req);
-      const { command } = req.body;
-  
-      if (!command)
-        return res.status(400).json({ error: "command is required" });
-  
-      const output = await runShellCommand(command, sshConfig);
-  
-      const cleaned = output
-        .replace(/\x1B\[[0-9;?]*[a-zA-Z]/g, "")  // remove ANSI escape codes
-        .replace(/\x1B\][0-9];.*?\x07/g, "")     // remove OSC sequences
-        .replace(/\r/g, "")                      // remove carriage returns
+  try {
+    const sshConfig = getSSHConfig(req);
+    const { command } = req.body;
+
+    if (!command)
+      return res.status(400).json({ error: "command is required" });
+
+    const result = await runShellCommand(command, sshConfig);
+
+    const cleanOutput = (raw) =>
+      (raw || "")
+        .replace(/\x1B\[[0-9;?]*[a-zA-Z]/g, "")  // ANSI escape codes
+        .replace(/\x1B\][0-9];.*?\x07/g, "")       // OSC sequences
+        .replace(/\r/g, "")                         // carriage returns
         .trim();
-  
-      res.json({ output: cleaned });
-  
-    } catch (err) {
-  
-      res.status(500).json({ error: err.message });
-  
+
+    if (result.requiresInput) {
+      // Shell is waiting for a password / yes-no / etc.
+      return res.json({
+        output: cleanOutput(result.output),
+        requiresInput: true,
+        prompt: result.prompt,
+        isPassword: result.isPassword,
+      });
     }
-  });
+
+    // Normal completed command
+    return res.json({
+      output: cleanOutput(result.output),
+      requiresInput: false,
+    });
+
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // ─── GET /processes ──────────────────────────────────────────────────────────
 router.get("/processes", async (req, res) => {
